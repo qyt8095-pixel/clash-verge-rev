@@ -81,7 +81,8 @@ jobs:
             throw 'Expected installMode perMachine not found in tauri.windows.conf.json'
           }
           $text = $text -replace '"installMode": "perMachine"', '"installMode": "currentUser"'
-          Set-Content -Path $file -Value $text -Encoding utf8
+            # Use no-BOM UTF-8: Windows PowerShell utf8 writes a BOM that breaks Tauri JSON parsing
+          [System.IO.File]::WriteAllText((Resolve-Path $file).Path, $text, (New-Object System.Text.UTF8Encoding($false)))
           Select-String -Path $file -Pattern 'installMode'
           $main = 'src-tauri/tauri.conf.json'
           $mainText = Get-Content -Raw $main
@@ -89,7 +90,7 @@ jobs:
             throw 'Expected createUpdaterArtifacts true not found in tauri.conf.json'
           }
           $mainText = $mainText -replace '"createUpdaterArtifacts": true', '"createUpdaterArtifacts": false'
-          Set-Content -Path $main -Value $mainText -Encoding utf8
+          [System.IO.File]::WriteAllText((Resolve-Path $main).Path, $mainText, (New-Object System.Text.UTF8Encoding($false)))
           Select-String -Path $main -Pattern 'createUpdaterArtifacts'
 
       - name: Tauri build (NSIS only, no updater signing)
