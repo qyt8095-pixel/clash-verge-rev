@@ -1,0 +1,145 @@
+name: No-admin installer (Windows x64)
+
+# Builds the official NSIS installer, but per-user instead of
+# per-machine, so it installs without administrator rights.
+#
+# Why this exists: src-tauri/tauri.windows.conf.json sets
+# bundle.windows.nsis.installMode to "perMachine", and the NSIS
+# template (src-tauri/packages/windows/installer.nsi) then sets
+# RequestExecutionLevel admin for perMachine. Changing installMode
+# to "currentUser" makes the same template set
+# RequestExecutionLevel user instead, and the installer goes to
+# the current user's own folders. Nothing else in the app changes.
+#
+# Trigger: manually, from the Actions tab (Run workflow), on the
+# dev branch. It does NOT run on push, so normal development is
+# unaffected.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  noadmin-windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: 'v1-rust-noadmin'
+          key: 'rust-noadmin-windows-x64'
+          workspaces: |
+            . -> target
+          cache-all-crates: true
+          cache-workspace-crates: true
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: '12.15.0'
+          run_install: false
+
+      - name: Pnpm install and prebuild
+        run: |
+          pnpm i
+          pnpm run prebuild x86_64-pc-windows-msvc
+        env:
+          HUSKY: 0
+
+      # The fixes, done here in the workflow (not committed to the
+      # repo) so the upstream config stays untouched and this
+      # workflow is self-contained. All are file edits, not shell
+      # arguments: passing JSON on the command line broke in run #1
+      # because PowerShell stripped the double quotes, making the
+      # --config value invalid JSON.
+      # Signing: the fork's own Tauri updater keypair (generated with
+      # `tauri signer generate`). The private key lives ONLY as the
+      # repository secret TAURI_PRIVATE_KEY; the public key below is
+      # public and is embedded into the app in this step. Note: this
+      # is Tauri updater signing, not Windows Authenticode code
+      # signing, so SmartScreen may still prompt on first run.
+      - name: Switch NSIS installer to per-user + own signing key
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $file = 'src-tauri/tauri.windows.conf.json'
+          $text = Get-Content -Raw $file
+          if ($text -notmatch '"installMode": "perMachine"') {
+            throw 'Expected installMode perMachine not found in tauri.windows.conf.json'
+          }
+          $text = $text -replace '"installMode": "perMachine"', '"installMode": "currentUser"'
+          # Write without a BOM: Windows PowerShell's Set-Content -Encoding utf8
+          # writes a BOM, and Tauri's JSON parser then fails on
+          # tauri.conf.json with "expected value at line 1 column 1"
+          # (that is what killed run #2). .NET WriteAllText with
+          # UTF8Encoding($false) writes plain UTF-8, no BOM.
+          [System.IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding($false)))
+          Select-String -Path $file -Pattern 'installMode'
+          $main = 'src-tauri/tauri.conf.json'
+          $mainText = Get-Content -Raw $main
+          # createUpdaterArtifacts stays true now: with the fork's own
+          # signing key, updater artifacts can be generated and signed.
+          if ($mainText -notmatch '"createUpdaterArtifacts": true') {
+            throw 'Expected createUpdaterArtifacts true not found in tauri.conf.json'
+          }
+          # Swap the updater public key from upstream's to the fork's own.
+          # Use literal .Replace (not -replace) so base64 +/= characters
+          # are not treated as regex.
+          $oldPubkey = 'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQyOEMyRjBCQkVGOUJEREYKUldUZnZmbStDeStNMHU5Mmo1N24xQXZwSVRYbXA2NUpzZE5oVzlqeS9Bc0t6RVV4MmtwVjBZaHgK'
+          $newPubkey = 'dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU5NDM4MUM2RjVEODNGMDIKUldRQ1A5ajF4b0ZENlQxcWFDT2NEbHpyNGkxUnl4M3Axakl1a2xmTURYRk9rQ3ovWkVxSTJzMVgK'
+          if (-not $mainText.Contains($oldPubkey)) {
+            throw 'Expected upstream updater pubkey not found in tauri.conf.json'
+          }
+          $mainText = $mainText.Replace($oldPubkey, $newPubkey)
+          [System.IO.File]::WriteAllText($main, $mainText, (New-Object System.Text.UTF8Encoding($false)))
+          Select-String -Path $main -Pattern 'createUpdaterArtifacts'
+
+      - name: Tauri build (NSIS, signed with own key)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+          HUSKY: 0
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+
+      - name: List built installer
+        shell: powershell
+        run: |
+          Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis | Select-Object Name, Length
+
+      - name: Upload no-admin installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: clash-verge-noadmin-windows
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*setup*.exe
+          if-no-files-found: error
+
+      - name: Upload updater signature artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: clash-verge-updater-signatures
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.sig
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.zip
+          if-no-files-found: warn
