@@ -65,9 +65,12 @@ jobs:
         env:
           HUSKY: 0
 
-      # The one-line fix: perMachine -> currentUser. Done here in the
-      # workflow (not committed to the repo) so the upstream config
-      # stays untouched and this workflow is self-contained.
+      # The fixes, done here in the workflow (not committed to the
+      # repo) so the upstream config stays untouched and this
+      # workflow is self-contained. Both are file edits, not shell
+      # arguments: passing JSON on the command line broke in run #1
+      # because PowerShell stripped the double quotes, making the
+      # --config value invalid JSON.
       - name: Switch NSIS installer to per-user (no admin)
         shell: powershell
         run: |
@@ -80,17 +83,25 @@ jobs:
           $text = $text -replace '"installMode": "perMachine"', '"installMode": "currentUser"'
           Set-Content -Path $file -Value $text -Encoding utf8
           Select-String -Path $file -Pattern 'installMode'
+          $main = 'src-tauri/tauri.conf.json'
+          $mainText = Get-Content -Raw $main
+          if ($mainText -notmatch '"createUpdaterArtifacts": true') {
+            throw 'Expected createUpdaterArtifacts true not found in tauri.conf.json'
+          }
+          $mainText = $mainText -replace '"createUpdaterArtifacts": true', '"createUpdaterArtifacts": false'
+          Set-Content -Path $main -Value $mainText -Encoding utf8
+          Select-String -Path $main -Pattern 'createUpdaterArtifacts'
 
       - name: Tauri build (NSIS only, no updater signing)
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          # createUpdaterArtifacts is true in the main config, which
-          # would require a signing key this fork does not have.
-          # Overriding it to false keeps the NSIS installer build
-          # unsigned (Windows may show a SmartScreen prompt, click
+          # createUpdaterArtifacts was already switched off in the
+          # previous step (it would require a signing key this fork
+          # does not have), so the NSIS installer builds unsigned
+          # (Windows may show a SmartScreen prompt, click
           # "Run anyway") but otherwise identical.
-          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis
         env:
           NODE_OPTIONS: '--max_old_space_size=4096'
           HUSKY: 0
