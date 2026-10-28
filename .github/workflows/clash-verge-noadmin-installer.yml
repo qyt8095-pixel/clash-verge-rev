@@ -1,0 +1,108 @@
+name: No-admin installer (Windows x64)
+
+# Builds the official NSIS installer, but per-user instead of
+# per-machine, so it installs without administrator rights.
+#
+# Why this exists: src-tauri/tauri.windows.conf.json sets
+# bundle.windows.nsis.installMode to "perMachine", and the NSIS
+# template (src-tauri/packages/windows/installer.nsi) then sets
+# RequestExecutionLevel admin for perMachine. Changing installMode
+# to "currentUser" makes the same template set
+# RequestExecutionLevel user instead, and the installer goes to
+# the current user's own folders. Nothing else in the app changes.
+#
+# Trigger: manually, from the Actions tab (Run workflow), on the
+# dev branch. It does NOT run on push, so normal development is
+# unaffected.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  noadmin-windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Install Rust Stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.99.1'
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: 'v1-rust-noadmin'
+          key: 'rust-noadmin-windows-x64'
+          workspaces: |
+            . -> target
+          cache-all-crates: true
+          cache-workspace-crates: true
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: '12.15.0'
+          run_install: false
+
+      - name: Pnpm install and prebuild
+        run: |
+          pnpm i
+          pnpm run prebuild x86_64-pc-windows-msvc
+        env:
+          HUSKY: 0
+
+      # The one-line fix: perMachine -> currentUser. Done here in the
+      # workflow (not committed to the repo) so the upstream config
+      # stays untouched and this workflow is self-contained.
+      - name: Switch NSIS installer to per-user (no admin)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $file = 'src-tauri/tauri.windows.conf.json'
+          $text = Get-Content -Raw $file
+          if ($text -notmatch '"installMode": "perMachine"') {
+            throw 'Expected installMode perMachine not found in tauri.windows.conf.json'
+          }
+          $text = $text -replace '"installMode": "perMachine"', '"installMode": "currentUser"'
+          Set-Content -Path $file -Value $text -Encoding utf8
+          Select-String -Path $file -Pattern 'installMode'
+
+      - name: Tauri build (NSIS only, no updater signing)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # createUpdaterArtifacts is true in the main config, which
+          # would require a signing key this fork does not have.
+          # Overriding it to false keeps the NSIS installer build
+          # unsigned (Windows may show a SmartScreen prompt, click
+          # "Run anyway") but otherwise identical.
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        env:
+          NODE_OPTIONS: '--max_old_space_size=4096'
+          HUSKY: 0
+
+      - name: List built installer
+        shell: powershell
+        run: |
+          Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis -Filter '*setup*.exe' | Select-Object Name, Length
+
+      - name: Upload no-admin installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: clash-verge-noadmin-windows
+          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*setup*.exe
+          if-no-files-found: error
