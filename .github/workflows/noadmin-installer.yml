@@ -81,8 +81,12 @@ jobs:
             throw 'Expected installMode perMachine not found in tauri.windows.conf.json'
           }
           $text = $text -replace '"installMode": "perMachine"', '"installMode": "currentUser"'
-            # Use no-BOM UTF-8: Windows PowerShell utf8 writes a BOM that breaks Tauri JSON parsing
-          [System.IO.File]::WriteAllText((Resolve-Path $file).Path, $text, (New-Object System.Text.UTF8Encoding($false)))
+          # Write without a BOM: Windows PowerShell's Set-Content -Encoding utf8
+          # writes a BOM, and Tauri's JSON parser then fails on
+          # tauri.conf.json with "expected value at line 1 column 1"
+          # (that is what killed run #2). .NET WriteAllText with
+          # UTF8Encoding($false) writes plain UTF-8, no BOM.
+          [System.IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding($false)))
           Select-String -Path $file -Pattern 'installMode'
           $main = 'src-tauri/tauri.conf.json'
           $mainText = Get-Content -Raw $main
@@ -90,7 +94,7 @@ jobs:
             throw 'Expected createUpdaterArtifacts true not found in tauri.conf.json'
           }
           $mainText = $mainText -replace '"createUpdaterArtifacts": true', '"createUpdaterArtifacts": false'
-          [System.IO.File]::WriteAllText((Resolve-Path $main).Path, $mainText, (New-Object System.Text.UTF8Encoding($false)))
+          [System.IO.File]::WriteAllText($main, $mainText, (New-Object System.Text.UTF8Encoding($false)))
           Select-String -Path $main -Pattern 'createUpdaterArtifacts'
 
       - name: Tauri build (NSIS only, no updater signing)
